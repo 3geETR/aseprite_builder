@@ -28,15 +28,9 @@ jobs:
           data=$(curl -sL https://api.github.com/repos/aseprite/aseprite/releases/latest)
           LATEST_TAG=$(echo "$data" | jq -r '.tag_name')
           DOWNLOAD_URL=$(echo "$data" | jq -r '.assets[].browser_download_url')
-          VERSION_INFO=$(echo "$data" | jq -r '.body')
 
-          echo "$LATEST_TAG" > "$LATEST_TAG.txt"
           echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
           echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
-
-          echo "version_info<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$VERSION_INFO" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Load version from cache
         id: version_check
@@ -50,19 +44,14 @@ jobs:
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/fix' || steps.version_check.outputs.cache-hit != 'true'
         run: echo "should_build=true" >> "$GITHUB_OUTPUT"
 
-      - name: Create Release
+      - name: Create Release (draft)
         if: steps.should_build.outputs.should_build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cat > release_notes.txt << 'EOF'
-${{ steps.version_info.outputs.version_info }}
-EOF
-
           gh release create "${{ steps.version_info.outputs.latest_tag }}" \
             --repo "${{ github.repository }}" \
             --title "Release Aseprite ${{ steps.version_info.outputs.latest_tag }}" \
-            --notes-file release_notes.txt \
             --draft
 
   build-aseprite:
@@ -77,67 +66,32 @@ EOF
       fail-fast: false
 
     steps:
-      - name: (Windows) Install dependencies
+      - name: (Windows) Install Ninja
         if: matrix.os == 'windows-latest'
         uses: seanmiddleditch/gha-setup-ninja@v3
-
-      - name: (Windows) Remove OpenSSL from PATH
-        if: matrix.os == 'windows-latest'
-        shell: powershell
-        run: Remove-Item -Recurse -Force "C:\Program Files\OpenSSL\"
 
       - name: (Ubuntu) Install dependencies
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt update && sudo apt install -y cmake ninja-build libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libfontconfig-dev
 
       - name: Get Skia from cache
-        id: skia-cache
         uses: actions/cache@v3
         with:
           path: skia
-          key: skia-${{ matrix.os }}-cache
+          key: skia-${{ matrix.os }}
 
-      - name: Download Skia if not in cache (linux)
-        if: steps.skia-cache.outputs.cache-hit != 'true' && matrix.os == 'ubuntu-latest'
+      - name: Download Skia
         run: |
           curl -L -o skia.zip https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-${{ runner.os }}-Release-x64.zip
           unzip skia.zip -d skia
 
-      - name: Download Skia if not in cache
-        if: steps.skia-cache.outputs.cache-hit != 'true' && matrix.os != 'ubuntu-latest'
+      - name: Download Aseprite source
         run: |
-          curl -L -o skia.zip https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-${{ runner.os }}-Release-x64.zip
-          unzip skia.zip -d skia
-
-      - name: Download Aseprite release
-        run: |
-          curl -L -o Aseprite-source.zip "${{ needs.check-version.outputs.download_url }}"
-          unzip Aseprite-source.zip -d aseprite
+          curl -L -o aseprite.zip "${{ needs.check-version.outputs.download_url }}"
+          unzip aseprite.zip -d aseprite
           mkdir -p aseprite/build
 
-      - name: (Windows) Set architecture
-        if: matrix.os == 'windows-latest'
-        shell: cmd
-        run: call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
-
-      - name: (Windows) Setup VS env
-        if: matrix.os == 'windows-latest'
-        uses: seanmiddleditch/gha-setup-vsdevenv@v4
-
-      - name: (Windows) Run CMake
-        if: matrix.os == 'windows-latest'
-        working-directory: aseprite/build
-        shell: pwsh
-        run: |
-          cmake -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DLAF_BACKEND=skia \
-            -DSKIA_DIR="$(Convert-Path ../../skia)" \
-            -DSKIA_LIBRARY_DIR="$(Convert-Path ../../skia/out/Release-x64)" \
-            -DSKIA_LIBRARY="$(Convert-Path ../../skia/out/Release-x64/skia.lib)" \
-            -G Ninja ..
-
-      - name: (Ubuntu) Run CMake
-        if: matrix.os == 'ubuntu-latest'
+      - name: Run CMake
         working-directory: aseprite/build
         run: |
           cmake -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
@@ -146,24 +100,16 @@ EOF
             -DSKIA_LIBRARY_DIR=$(realpath ../../skia/out/Release-x64) \
             -G Ninja ..
 
-      - name: Run Ninja
+      - name: Build
         working-directory: aseprite/build
         run: ninja aseprite
 
-      - name: Clean up build
+      - name: Zip build
         working-directory: aseprite/build/bin
-        run: rm -f gen modp_b64_gen gen.exe gen.exe.manifest modp_b64_gen.exe modp_b64_gen.exe.manifest
+        run: |
+          7z a Aseprite-${{ needs.check-version.outputs.latest_tag }}-${{ runner.os }}.zip *
 
-      - name: (Windows) Make portable zip
-        if: matrix.os == 'windows-latest'
-        working-directory: aseprite/build/bin
-        run: echo "# portable" > aseprite.ini
-
-      - name: Create zip
-        working-directory: aseprite/build/bin
-        run: 7z -tzip a Aseprite-${{ needs.check-version.outputs.latest_tag }}-${{ runner.os }}.zip *
-
-      - name: Upload release asset
+      - name: Upload asset
         working-directory: aseprite/build/bin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
