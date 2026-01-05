@@ -57,7 +57,7 @@ jobs:
         release_name: Release Aseprite ${{ steps.version_info.outputs.latest_tag }}
         body: |
           ${{ steps.version_info.outputs.version_info }}
-        draft: false
+        draft: true
         prerelease: false
 
   build-aseprite:
