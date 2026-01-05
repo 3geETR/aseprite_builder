@@ -66,48 +66,80 @@ jobs:
       fail-fast: false
 
     steps:
-      - name: (Windows) Install Ninja
+      - name: (Windows) Install dependencies
         if: matrix.os == 'windows-latest'
         uses: seanmiddleditch/gha-setup-ninja@v3
+
+      - name: (Windows) Remove OpenSSL from PATH
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: Remove-Item -Recurse -Force "C:\Program Files\OpenSSL\"
 
       - name: (Ubuntu) Install dependencies
         if: matrix.os == 'ubuntu-latest'
         run: sudo apt update && sudo apt install -y cmake ninja-build libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libfontconfig-dev
 
       - name: Get Skia from cache
+        id: skia-cache
         uses: actions/cache@v3
         with:
           path: skia
-          key: skia-${{ matrix.os }}
+          key: skia-${{ matrix.os }}-cache
 
-      - name: Download Skia
+      - name: Download Skia if not in cache (linux)
+        if: steps.skia-cache.outputs.cache-hit != 'true' && matrix.os == 'ubuntu-latest'
         run: |
-          curl -L -o skia.zip https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-${{ runner.os }}-Release-x64.zip
-          unzip skia.zip -d skia
+          curl -L -o Skia-${{ runner.os }}-Release-X64.zip https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-${{ runner.os }}-Release-x64.zip
+          unzip -o Skia-${{ runner.os }}-Release-X64.zip -d skia
 
-      - name: Download Aseprite source
+      - name: Download Skia if not in cache
+        if: steps.skia-cache.outputs.cache-hit != 'true' && matrix.os != 'ubuntu-latest'
         run: |
-          curl -L -o aseprite.zip "${{ needs.check-version.outputs.download_url }}"
-          unzip aseprite.zip -d aseprite
+          curl -L -o Skia-${{ runner.os }}-Release-X64.zip https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-${{ runner.os }}-Release-x64.zip
+          unzip -o Skia-${{ runner.os }}-Release-X64.zip -d skia
+
+      - name: Download Aseprite release
+        run: |
+          curl -L -o Aseprite-source.zip "${{ needs.check-version.outputs.download_url }}"
+          unzip -o Aseprite-source.zip -d aseprite
           mkdir -p aseprite/build
 
-      - name: Run CMake
-        working-directory: aseprite/build
-        run: |
-          cmake -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DLAF_BACKEND=skia \
-            -DSKIA_DIR=$(realpath ../../skia) \
-            -DSKIA_LIBRARY_DIR=$(realpath ../../skia/out/Release-x64) \
-            -G Ninja ..
+      - name: (Windows) Set architecture
+        if: matrix.os == 'windows-latest'
+        shell: cmd
+        run: call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64
 
-      - name: Build
+      - name: (Windows) Setup VS env
+        if: matrix.os == 'windows-latest'
+        uses: seanmiddleditch/gha-setup-vsdevenv@v4
+
+      - name: (Windows) Run CMake
+        if: matrix.os == 'windows-latest'
+        working-directory: aseprite/build
+        shell: pwsh
+        run: cmake -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_IGNORE_PATH='C:/ProgramData/chocolatey/bin/;C:/Strawberry/c/bin/' -DLAF_BACKEND=skia -DSKIA_DIR="$(Convert-Path ../../skia)" -DSKIA_LIBRARY_DIR="$(Convert-Path ../../skia/out/Release-x64)" -DSKIA_LIBRARY="$(Convert-Path ../../skia/out/Release-x64/skia.lib)" -G Ninja ..
+
+      - name: (Ubuntu) Run CMake
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: aseprite/build
+        run: cmake -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DLAF_BACKEND=skia -DSKIA_DIR=$(realpath ../../skia) -DSKIA_LIBRARY_DIR=$(realpath ../../skia/out/Release-x64) -G Ninja ..
+
+      - name: Run Ninja
         working-directory: aseprite/build
         run: ninja aseprite
 
-      - name: Zip build
+      - name: Clean up build
         working-directory: aseprite/build/bin
-        run: |
-          7z a Aseprite-${{ needs.check-version.outputs.latest_tag }}-${{ runner.os }}.zip *
+        run: rm -f gen modp_b64_gen gen.exe gen.exe.manifest modp_b64_gen.exe modp_b64_gen.exe.manifest
+
+      - name: (Windows) Make portable zip
+        if: matrix.os == 'windows-latest'
+        working-directory: aseprite/build/bin
+        run: echo '# portable' > aseprite.ini
+
+      - name: Create zip
+        working-directory: aseprite/build/bin
+        run: 7z -tzip a Aseprite-${{ needs.check-version.outputs.latest_tag }}-${{ runner.os }}.zip *
 
       - name: Upload asset
         working-directory: aseprite/build/bin
